@@ -1,66 +1,75 @@
-import streamlit as st
+#!/usr/bin/env python3
+"""
+Fast version of the ledger preparer (vectorized).
+Run this locally or on Streamlit Cloud.
+"""
+
 import pandas as pd
 import numpy as np
+import argparse
 
-st.title("Prepare Row-Level Seed Trait Ledger")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--history", required=True)
+    parser.add_argument("--out", default="aabc_seed_group_ledger_REBUILT.csv")
+    args = parser.parse_args()
 
-uploaded_file = st.file_uploader("Upload aabc_seed_group_ledger.csv", type="csv")
+    print("Loading history...")
+    df = pd.read_csv(args.history, low_memory=False)
+    print(f"Loaded {len(df):,} rows")
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file, low_memory=False)
-    st.success(f"Loaded {len(df):,} rows")
+    # Standardize
+    df["date"] = df.get("Date", df.get("date", ""))
+    df["stream"] = df.get("StreamKey", df.get("stream", df.get("game", "")))
+    df["seed"] = df["Result4"].astype(str).str.zfill(4)
+    df["winner_result"] = df["Result4"].astype(str).str.zfill(4)
 
-    # === Standardize columns ===
-    col_map = {
-        "winner_core": ["winner_core", "core", "winning_core"],
-        "winner_member": ["winner_member", "member"],
-        "date": ["Date", "date", "play_date", "draw_date", "DateParsed"],
-        "stream": ["StreamKey", "stream", "stream_name", "game"],
-        "seed": ["SeedResult", "seed", "result", "winning_number"],
-    }
+    # For now, winner_core and winner_member are left blank
+    # (they usually come from a separate mapping you already have)
+    df["winner_core"] = ""
+    df["winner_member"] = ""
 
-    for standard, candidates in col_map.items():
-        found = None
-        for c in candidates:
-            if c in df.columns:
-                found = c
-                break
-        if found:
-            df[standard] = df[found]
-        else:
-            df[standard] = np.nan
+    s = df["seed"]
 
-    df["winner_core"] = df["winner_core"].astype(str).str.zfill(3)
+    # Vectorized trait derivation
+    df["seed_sum"] = s.apply(lambda x: sum(int(d) for d in x))
+    df["seed_first_last_sum"] = s.str[0].astype(int) + s.str[3].astype(int)
+    df["seed_sum_mod3"] = df["seed_sum"] % 3
+    df["seed_sum_mod5"] = df["seed_sum"] % 5
 
-    # Optional: add missing useful traits
-    if "seed_sum" in df.columns and "seed_sum_bucket" not in df.columns:
-        df["seed_sum_bucket"] = pd.cut(
-            df["seed_sum"], bins=[0, 9, 13, 18, 27], 
-            labels=["low", "mid_low", "mid_high", "high"]
-        ).astype(str)
+    df["seed_parity_pattern"] = s.apply(lambda x: "".join("O" if int(d) % 2 else "E" for d in x))
+    df["seed_highlow_pattern"] = s.apply(lambda x: "".join("H" if int(d) >= 5 else "L" for d in x))
 
-    # Reorder columns
-    front = ["date", "stream", "seed", "winner_core", "winner_member"]
-    rest = [c for c in df.columns if c not in front]
-    df = df[front + rest]
+    df["seed_sum_bucket"] = pd.cut(
+        df["seed_sum"], bins=[0, 9, 13, 18, 28],
+        labels=["low", "mid_low", "mid_high", "high"]
+    ).astype(str)
 
-    st.write("Preview of standardized ledger:")
-    st.dataframe(df.head(10))
+    def get_structure(s):
+        unique = len(set(s))
+        if unique == 1: return "AAAA"
+        if unique == 2: return "AABB" if s[0]==s[1] and s[2]==s[3] else "ABAB"
+        if unique == 3: return "AABC"
+        return "ABCD"
+    df["seed_structure"] = s.apply(get_structure)
 
-    # Download button
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="Download Standardized Ledger (row_level_seed_trait_ledger.csv)",
-        data=csv,
-        file_name="row_level_seed_trait_ledger.csv",
-        mime="text/csv"
-    )
+    df["seed_mirror_signature"] = "mirror_" + s.str[0] + s.str[3]
 
-    # Missing traits check
-    important = ["seed_parity_pattern", "seed_highlow_pattern", "seed_sum_bucket", 
-                 "seed_structure", "seed_mirror_signature"]
-    missing = [t for t in important if t not in df.columns]
-    if missing:
-        st.warning(f"Missing important traits: {missing}")
-    else:
-        st.success("All key seed traits are present.")
+    # Final columns
+    final_cols = [
+        "date", "stream", "seed",
+        "winner_result", "winner_core", "winner_member",
+        "seed_sum", "seed_sum_mod3", "seed_sum_mod5",
+        "seed_parity_pattern", "seed_highlow_pattern",
+        "seed_sum_bucket", "seed_structure", "seed_mirror_signature",
+        "seed_first_last_sum"
+    ]
+
+    df_out = df[[c for c in final_cols if c in df.columns]].copy()
+    df_out.to_csv(args.out, index=False)
+
+    print(f"\nSaved: {args.out}")
+    print(f"Rows: {len(df_out):,}")
+
+if __name__ == "__main__":
+    main()
