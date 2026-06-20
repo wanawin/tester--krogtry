@@ -1,59 +1,56 @@
-#!/usr/bin/env python3
-"""
-Fast version of the ledger preparer (vectorized).
-Run this locally or on Streamlit Cloud.
-"""
-
+import streamlit as st
 import pandas as pd
 import numpy as np
-import argparse
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--history", required=True)
-    parser.add_argument("--out", default="aabc_seed_group_ledger_REBUILT.csv")
-    args = parser.parse_args()
+st.set_page_config(page_title="Prepare 120-Core Ledger", layout="wide")
+st.title("Prepare aabc_seed_group_ledger_REBUILT.csv")
 
-    print("Loading history...")
-    df = pd.read_csv(args.history, low_memory=False)
-    print(f"Loaded {len(df):,} rows")
+st.markdown("""
+Upload your merged history file.  
+This tool will create a clean, standardized ledger with all the seed traits needed for the assignment audit and future mining.
+""")
 
-    # Standardize
-    df["date"] = df.get("Date", df.get("date", ""))
-    df["stream"] = df.get("StreamKey", df.get("stream", df.get("game", "")))
-    df["seed"] = df["Result4"].astype(str).str.zfill(4)
-    df["winner_result"] = df["Result4"].astype(str).str.zfill(4)
+uploaded_file = st.file_uploader("Upload merged_clean_history_....csv", type="csv")
 
-    # For now, winner_core and winner_member are left blank
-    # (they usually come from a separate mapping you already have)
-    df["winner_core"] = ""
-    df["winner_member"] = ""
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file, low_memory=False)
+    st.success(f"Loaded {len(df):,} rows")
 
-    s = df["seed"]
+    with st.spinner("Processing and deriving traits..."):
+        # Standardize columns
+        df["date"] = df.get("Date", df.get("date", df.get("DateParsed", "")))
+        df["stream"] = df.get("StreamKey", df.get("stream", df.get("game", "")))
+        df["seed"] = df["Result4"].astype(str).str.zfill(4)
+        df["winner_result"] = df["Result4"].astype(str).str.zfill(4)
 
-    # Vectorized trait derivation
-    df["seed_sum"] = s.apply(lambda x: sum(int(d) for d in x))
-    df["seed_first_last_sum"] = s.str[0].astype(int) + s.str[3].astype(int)
-    df["seed_sum_mod3"] = df["seed_sum"] % 3
-    df["seed_sum_mod5"] = df["seed_sum"] % 5
+        # These two usually come from your existing mapping.
+        # Leaving blank for now — you can fill them later if needed.
+        df["winner_core"] = ""
+        df["winner_member"] = ""
 
-    df["seed_parity_pattern"] = s.apply(lambda x: "".join("O" if int(d) % 2 else "E" for d in x))
-    df["seed_highlow_pattern"] = s.apply(lambda x: "".join("H" if int(d) >= 5 else "L" for d in x))
+        s = df["seed"]
 
-    df["seed_sum_bucket"] = pd.cut(
-        df["seed_sum"], bins=[0, 9, 13, 18, 28],
-        labels=["low", "mid_low", "mid_high", "high"]
-    ).astype(str)
+        # Derive traits (vectorized where possible)
+        df["seed_sum"] = s.apply(lambda x: sum(int(d) for d in x))
+        df["seed_first_last_sum"] = s.str[0].astype(int) + s.str[3].astype(int)
+        df["seed_sum_mod3"] = df["seed_sum"] % 3
+        df["seed_sum_mod5"] = df["seed_sum"] % 5
+        df["seed_parity_pattern"] = s.apply(lambda x: "".join("O" if int(d) % 2 else "E" for d in x))
+        df["seed_highlow_pattern"] = s.apply(lambda x: "".join("H" if int(d) >= 5 else "L" for d in x))
 
-    def get_structure(s):
-        unique = len(set(s))
-        if unique == 1: return "AAAA"
-        if unique == 2: return "AABB" if s[0]==s[1] and s[2]==s[3] else "ABAB"
-        if unique == 3: return "AABC"
-        return "ABCD"
-    df["seed_structure"] = s.apply(get_structure)
+        df["seed_sum_bucket"] = pd.cut(
+            df["seed_sum"], bins=[0, 9, 13, 18, 28],
+            labels=["low", "mid_low", "mid_high", "high"]
+        ).astype(str)
 
-    df["seed_mirror_signature"] = "mirror_" + s.str[0] + s.str[3]
+        def get_structure(s):
+            unique = len(set(s))
+            if unique == 1: return "AAAA"
+            if unique == 2: return "AABB" if s[0] == s[1] and s[2] == s[3] else "ABAB"
+            if unique == 3: return "AABC"
+            return "ABCD"
+        df["seed_structure"] = s.apply(get_structure)
+        df["seed_mirror_signature"] = "mirror_" + s.str[0] + s.str[3]
 
     # Final columns
     final_cols = [
@@ -64,12 +61,21 @@ def main():
         "seed_sum_bucket", "seed_structure", "seed_mirror_signature",
         "seed_first_last_sum"
     ]
-
     df_out = df[[c for c in final_cols if c in df.columns]].copy()
-    df_out.to_csv(args.out, index=False)
 
-    print(f"\nSaved: {args.out}")
-    print(f"Rows: {len(df_out):,}")
+    st.success("Ledger prepared successfully!")
 
-if __name__ == "__main__":
-    main()
+    # Preview
+    st.subheader("Preview (first 10 rows)")
+    st.dataframe(df_out.head(10))
+
+    # Download button
+    csv = df_out.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download aabc_seed_group_ledger_REBUILT.csv",
+        data=csv,
+        file_name="aabc_seed_group_ledger_REBUILT.csv",
+        mime="text/csv"
+    )
+
+    st.info("You can now use this file with the stream_core_assignment_audit_v1.py script.")
